@@ -11,6 +11,7 @@ import tools
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 storage.init_db()
+tools.discover_mcp_tools()  # pay the MCP subprocess-spawn cost at boot, not on a live request
 
 # ---- Cloud provider (Kira AI) ----
 KIRA_API_KEY = os.environ["KIRA_API_KEY"]
