@@ -291,6 +291,24 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.route("/api/tools")
+def list_tools():
+    specs = tools.build_tool_specs("_probe")
+    out = []
+    for name, spec in specs.items():
+        if name.startswith("mcp_"):
+            category = "mcp"
+        elif name.startswith("system_exec_"):
+            category = "system"
+        elif name == "run_code":
+            category = "sandbox"
+        else:
+            category = "memory"
+        out.append({"name": name, "description": spec["description"], "category": category})
+    connectors = list(tools.load_connectors().keys())
+    return jsonify({"tools": out, "connectors": connectors, "connectors_active": False})
+
+
 @app.route("/api/history")
 def history():
     session_id = str(request.args.get("session_id") or "")[:128]
