@@ -48,6 +48,19 @@ LOCAL_SERVERS = {
 }
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
+# ---- Ollama Cloud (hosted, larger models via an ollama.com API key) ----
+# Same setup the old ai-jarvis project used: OpenAI-compatible endpoint at
+# https://ollama.com/v1. Inert until OLLAMA_CLOUD_API_KEY is set.
+OLLAMA_CLOUD_API_KEY = os.environ.get("OLLAMA_CLOUD_API_KEY", "")
+OLLAMA_CLOUD_BASE_URL = os.environ.get("OLLAMA_CLOUD_BASE_URL", "https://ollama.com/v1")
+OLLAMA_CLOUD_MODEL_ID = os.environ.get("OLLAMA_CLOUD_MODEL", "nemotron-3-ultra:cloud")
+OLLAMA_CLOUD_MODELS = {}
+if OLLAMA_CLOUD_API_KEY:
+    OLLAMA_CLOUD_MODELS["ollama-cloud"] = {
+        "label": f"{OLLAMA_CLOUD_MODEL_ID} (Ollama Cloud)",
+        "model": OLLAMA_CLOUD_MODEL_ID,
+    }
+
 MAX_ATTACHMENTS = 4
 MAX_TEXT_ATTACHMENT_CHARS = 20000
 
@@ -180,6 +193,9 @@ def call_model(model, messages):
     if model in LOCAL_SERVERS:
         cfg = LOCAL_SERVERS[model]
         return call_local_server(cfg["base_url"], cfg["api_key"], model, messages)
+    if model in OLLAMA_CLOUD_MODELS:
+        cfg = OLLAMA_CLOUD_MODELS[model]
+        return call_local_server(OLLAMA_CLOUD_BASE_URL, OLLAMA_CLOUD_API_KEY, cfg["model"], messages)
     if model.startswith("ollama:"):
         return call_ollama(model[len("ollama:"):], messages)
     raise UpstreamError("Unknown model.")
@@ -284,6 +300,8 @@ def models():
         out.append({"id": mid, "label": cfg["label"], "provider": "local"})
     for name in list_ollama_models():
         out.append({"id": f"ollama:{name}", "label": f"Local · {name} (Ollama)", "provider": "local"})
+    for mid, cfg in OLLAMA_CLOUD_MODELS.items():
+        out.append({"id": mid, "label": cfg["label"], "provider": "ollama-cloud"})
     return jsonify({"models": out, "default": DEFAULT_MODEL})
 
 
