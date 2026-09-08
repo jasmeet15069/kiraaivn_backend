@@ -12,6 +12,8 @@ import json
 import os
 import re
 
+import requests
+
 import mcp_client
 import sandbox
 import storage
@@ -24,6 +26,7 @@ CONNECTORS_CONFIG = os.environ.get(
     "JARVIS_CONNECTORS_CONFIG",
     os.path.join(os.path.dirname(__file__), "connectors.json"),
 )
+AGENT_GATEWAY_URL = os.environ.get("AGENT_GATEWAY_URL", "http://127.0.0.1:5002")
 
 
 def load_connectors():
@@ -36,16 +39,44 @@ def load_connectors():
         return {}
 
 
+def gateway_status():
+    """Which agents are currently connected to the gateway. Best-effort —
+    returns {} if the gateway isn't running (e.g. not set up yet)."""
+    try:
+        resp = requests.get(f"{AGENT_GATEWAY_URL}/status", timeout=2)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException:
+        return {}
+
+
 def system_exec(connector_name, command):
-    # Deliberately not implemented: wiring this up needs an SSH client
-    # library, and installing one (paramiko) was blocked by the Claude Code
-    # auto-mode security classifier pending explicit human follow-up. See
-    # README.md "System connector" section.
-    return (
-        f"[system connector '{connector_name}' is configured but not active: "
-        "SSH execution was not wired up automatically — this needs a manual "
-        "follow-up step, see README.md.]"
-    )
+    """Relays a shell command to a laptop/machine running agent_client.py,
+    via the outbound-only agent gateway (see agent_gateway.py). The gateway
+    only knows about machines that are currently connected — connectors.json
+    just declares the names you expect to exist."""
+    try:
+        resp = requests.post(
+            f"{AGENT_GATEWAY_URL}/exec",
+            json={"agent": connector_name, "command": command, "timeout": 30},
+            timeout=35,
+        )
+    except requests.RequestException as exc:
+        return f"[system connector '{connector_name}' unreachable — is the gateway running? ({exc})]"
+
+    try:
+        data = resp.json()
+    except ValueError:
+        return f"[system connector '{connector_name}' returned an invalid response]"
+
+    if resp.status_code == 502:
+        return f"[system connector '{connector_name}' is registered but not currently connected — is agent_client.py running on that machine?]"
+    if not resp.ok:
+        return f"[system connector '{connector_name}' error: {data.get('error', resp.text)}]"
+
+    output = data.get("output", "")
+    exit_code = data.get("exit_code")
+    return f"(exit code {exit_code})\n{output}" if exit_code not in (None, 0) else output or "(no output)"
 
 
 _MCP_CACHE = None
@@ -58,8 +89,28 @@ def discover_mcp_tools(force=False):
     return _MCP_CACHE
 
 
-def build_tool_specs(session_id):
+def create_task_tool(session_id, model, description):
+    description = description.strip()
+    if not description:
+        return "No task description given — ask the user what they want done."
+    task_id = storage.create_task(session_id, model, description)
+    return (
+        f"Task #{task_id} queued. It will run in the background and the user will be "
+        "emailed when it's done — just let them know it's queued, don't try to also do "
+        "the work yourself in this reply."
+    )
+
+
+def build_tool_specs(session_id, model=None):
     specs = {
+        "create_task": {
+            "description": "Hand off a longer or complex request to run in the background instead of "
+                            "making the user wait right now. Use this when the user explicitly asks for "
+                            "something and to be notified/emailed later, or when a request will clearly "
+                            "take many steps.",
+            "params": '{"description": "<the task, restated with all context needed to do it standalone>"}',
+            "fn": lambda args: create_task_tool(session_id, model or "kira-mini-1.0", str(args.get("description", ""))),
+        },
         "remember": {
             "description": "Save a fact worth remembering for later in this conversation "
                             "(e.g. something the user told you about themselves or a preference).",

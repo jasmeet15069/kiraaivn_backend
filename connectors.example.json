@@ -1,11 +1,6 @@
 {
-  "_comment": "External SYSTEM connectors — NOT the VPS this app runs on. Copy to connectors.json to enable. Execution is currently a stub (see README 'System connector' section) pending an SSH library install that the auto-mode security classifier held back for explicit human approval.",
+  "_comment": "Names of machines expected to connect via agent_client.py (see agent_gateway.py). Copy to connectors.json to enable. A name here doesn't grant access by itself — the machine still has to actually run agent_client.py with the right AGENT_GATEWAY_TOKEN before Jarvis can reach it.",
   "connectors": {
-    "example-external-host": {
-      "host": "203.0.113.10",
-      "port": 22,
-      "username": "deploy",
-      "key_env": "EXAMPLE_HOST_SSH_KEY_PATH"
-    }
+    "my-laptop": {}
   }
 }

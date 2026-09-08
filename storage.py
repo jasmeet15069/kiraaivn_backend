@@ -33,6 +33,19 @@ CREATE TABLE IF NOT EXISTS exec_log (
     output TEXT NOT NULL,
     created_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    description TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    result TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
 """
 
 
@@ -155,5 +168,59 @@ def log_exec(session_id, tool, input_text, output_text):
             (session_id, tool, input_text[:5000], output_text[:5000], time.time()),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def create_task(session_id, model, description):
+    conn = _conn()
+    try:
+        now = time.time()
+        cur = conn.execute(
+            "INSERT INTO tasks (session_id, model, description, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'pending', ?, ?)",
+            (session_id, model, description, now, now),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_pending_tasks():
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT id, session_id, model, description FROM tasks WHERE status = 'pending' ORDER BY id ASC"
+        ).fetchall()
+        return [{"id": r[0], "session_id": r[1], "model": r[2], "description": r[3]} for r in rows]
+    finally:
+        conn.close()
+
+
+def update_task(task_id, status, result=None):
+    conn = _conn()
+    try:
+        conn.execute(
+            "UPDATE tasks SET status = ?, result = COALESCE(?, result), updated_at = ? WHERE id = ?",
+            (status, result, time.time(), task_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_tasks(session_id, limit=20):
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT id, description, status, result, created_at, updated_at FROM tasks "
+            "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+            (session_id, limit),
+        ).fetchall()
+        return [
+            {"id": r[0], "description": r[1], "status": r[2], "result": r[3], "created_at": r[4], "updated_at": r[5]}
+            for r in rows
+        ]
     finally:
         conn.close()

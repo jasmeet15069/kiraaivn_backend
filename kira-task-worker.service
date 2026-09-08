@@ -1,0 +1,16 @@
+[Unit]
+Description=Kira/Jarvis background task worker
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/kira-chat-backend
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/opt/kira-chat-backend/.env
+ExecStart=/opt/kira-chat-backend/.venv/bin/python worker.py
+Restart=on-failure
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

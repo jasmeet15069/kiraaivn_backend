@@ -252,11 +252,13 @@ def apply_attachments(text, attachments, is_cloud):
     return model_content, display_text
 
 
-def run_chat_turn(model, session_id, messages):
+def run_chat_turn(model, session_id, messages, max_iterations=None):
     """messages: list of {role, content} ending in the current user turn
     (content already attachment-processed). Runs the tool-call loop and
-    returns (final_reply_text, used_tools)."""
-    specs = tools.build_tool_specs(session_id)
+    returns (final_reply_text, used_tools). max_iterations overrides the
+    default cap — background tasks (worker.py) get a much higher one since
+    they aren't constrained by a request/response timeout."""
+    specs = tools.build_tool_specs(session_id, model)
     tool_docs = tools.format_tool_docs(specs)
 
     memories = storage.all_memories(session_id, limit=20)
@@ -271,7 +273,7 @@ def run_chat_turn(model, session_id, messages):
 
     used_tools = []
     raw = ""
-    for _ in range(tools.MAX_TOOL_ITERATIONS):
+    for _ in range(max_iterations or tools.MAX_TOOL_ITERATIONS):
         raw = call_model(model, convo)
         call = tools.parse_tool_call(raw)
         if not call:
@@ -312,7 +314,7 @@ def health():
 
 @app.route("/api/tools")
 def list_tools():
-    specs = tools.build_tool_specs("_probe")
+    specs = tools.build_tool_specs("_probe", DEFAULT_MODEL)
     out = []
     for name, spec in specs.items():
         if name.startswith("mcp_"):
@@ -321,11 +323,23 @@ def list_tools():
             category = "system"
         elif name == "run_code":
             category = "sandbox"
+        elif name == "create_task":
+            category = "task"
         else:
             category = "memory"
         out.append({"name": name, "description": spec["description"], "category": category})
-    connectors = list(tools.load_connectors().keys())
-    return jsonify({"tools": out, "connectors": connectors, "connectors_active": False})
+    connector_names = list(tools.load_connectors().keys())
+    live = tools.gateway_status()
+    connectors = [{"name": name, "connected": name in live} for name in connector_names]
+    return jsonify({"tools": out, "connectors": connectors})
+
+
+@app.route("/api/tasks")
+def list_tasks_route():
+    session_id = str(request.args.get("session_id") or "")[:128]
+    if not session_id:
+        return jsonify({"tasks": []})
+    return jsonify({"tasks": storage.list_tasks(session_id)})
 
 
 @app.route("/api/history")
