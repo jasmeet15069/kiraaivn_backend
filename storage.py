@@ -64,7 +64,17 @@ CREATE TABLE IF NOT EXISTS vps_history (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_vps_history_created ON vps_history(created_at);
+
+CREATE TABLE IF NOT EXISTS recycled_services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    unit TEXT NOT NULL UNIQUE,
+    description TEXT,
+    unit_file_content TEXT NOT NULL,
+    deleted_at REAL NOT NULL
+);
 """
+
+RECYCLE_BIN_DAYS = 30
 
 
 def _conn():
@@ -307,5 +317,73 @@ def get_vps_history_samples(since_ts):
             (since_ts,),
         ).fetchall()
         return [{"cpu_percent": r[0], "mem_percent": r[1], "disk_percent": r[2], "created_at": r[3]} for r in rows]
+    finally:
+        conn.close()
+
+
+def recycle_service(unit, unit_file_content, description):
+    conn = _conn()
+    try:
+        conn.execute(
+            "INSERT INTO recycled_services (unit, description, unit_file_content, deleted_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(unit) DO UPDATE SET description=excluded.description, "
+            "unit_file_content=excluded.unit_file_content, deleted_at=excluded.deleted_at",
+            (unit, description, unit_file_content, time.time()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def purge_expired_recycled_services():
+    cutoff = time.time() - RECYCLE_BIN_DAYS * 86400
+    conn = _conn()
+    try:
+        conn.execute("DELETE FROM recycled_services WHERE deleted_at < ?", (cutoff,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_recycled_services():
+    purge_expired_recycled_services()
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT unit, description, deleted_at FROM recycled_services ORDER BY deleted_at DESC"
+        ).fetchall()
+    finally:
+        conn.close()
+    now = time.time()
+    out = []
+    for unit, description, deleted_at in rows:
+        days_remaining = max(0, RECYCLE_BIN_DAYS - int((now - deleted_at) / 86400))
+        out.append({
+            "unit": unit, "description": description,
+            "deleted_at": deleted_at, "days_remaining": days_remaining,
+        })
+    return out
+
+
+def get_recycled_service(unit):
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT unit, description, unit_file_content, deleted_at FROM recycled_services WHERE unit = ?",
+            (unit,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return {"unit": row[0], "description": row[1], "unit_file_content": row[2], "deleted_at": row[3]}
+
+
+def remove_from_recycle_bin(unit):
+    conn = _conn()
+    try:
+        conn.execute("DELETE FROM recycled_services WHERE unit = ?", (unit,))
+        conn.commit()
     finally:
         conn.close()

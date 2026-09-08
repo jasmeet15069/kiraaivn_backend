@@ -17,8 +17,35 @@ _EXCLUDE_UNITS = {
     "dbus.service", "polkit.service", "multipathd.service", "qemu-guest-agent.service",
     "rsyslog.service", "cron.service", "atd.service", "containerd.service",
     "unattended-upgrades.service", "docker.service",
+    # Standard Ubuntu/cloud-init/distro plumbing — present (mostly inactive-by-design,
+    # e.g. oneshot boot units) on essentially any Ubuntu VPS, not project-specific.
+    "networkmanager.service", "acpid.service", "apparmor.service", "apport-autoreport.service",
+    "apport.service", "apt-daily-upgrade.service", "apt-daily.service", "auditd.service",
+    "blk-availability.service", "cloud-config.service", "cloud-final.service",
+    "cloud-init-hotplugd.service", "cloud-init-local.service", "cloud-init.service",
+    "connman.service", "console-screen.service", "console-setup.service",
+    "display-manager.service", "dm-event.service", "dmesg.service", "dpkg-db-backup.service",
+    "e2scrub_all.service", "e2scrub_reap.service", "emergency.service", "fcoe.service",
+    "finalrd.service", "firewalld.service", "fstrim.service", "getty-static.service",
+    "grub-common.service", "grub-initrd-fallback.service", "hc-net-scan.service",
+    "hv_kvp_daemon.service", "initrd-cleanup.service", "initrd-parse-etc.service",
+    "initrd-switch-root.service", "initrd-udevadm-cleanup-db.service", "iscsi-shutdown.service",
+    "iscsid.service", "kbd.service", "keyboard-setup.service", "kmod-static-nodes.service",
+    "ldconfig.service", "logrotate.service", "lvm2-activation-early.service",
+    "lvm2-lvmpolld.service", "lvm2-monitor.service", "man-db.service", "motd-news.service",
+    "netplan-ovs-cleanup.service", "networkd-dispatcher.service", "networking.service",
+    "open-iscsi.service", "open-vm-tools.service", "ovsdb-server.service", "pollinate.service",
+    "rbdmap.service", "rc-local.service", "rescue.service", "secureboot-db.service",
+    "setvtrgb.service", "sshd-keygen.service", "sshd.service", "sysstat-collect.service",
+    "sysstat-summary.service", "sysstat.service", "tpm-udev.service", "ua-auto-attach.service",
+    "ua-reboot-cmds.service", "ua-timer.service", "ubuntu-advantage-cloud-id-shim.service",
+    "ubuntu-advantage.service", "ufw.service", "update-notifier-download.service",
+    "update-notifier-motd.service", "uuidd.service", "vgauth.service", "zfs-mount.service",
 }
-_EXCLUDE_PREFIXES = ("systemd-", "getty@", "serial-getty@", "user@", "hc-net-ifup@")
+_EXCLUDE_PREFIXES = (
+    "systemd-", "getty@", "serial-getty@", "user@", "user-runtime-dir@", "hc-net-ifup@",
+    "modprobe@", "plymouth-", "snapd.",
+)
 _UNIT_RE = re.compile(r"^[A-Za-z0-9_.@-]+\.service$")
 
 
@@ -77,12 +104,14 @@ def get_load_avg():
     return {"1m": round(one, 2), "5m": round(five, 2), "15m": round(fifteen, 2)}
 
 
-def list_running_services():
-    """Every currently-running systemd service on the box, whatever project
-    it belongs to — not a fixed list, so it doesn't go stale."""
+def list_services():
+    """Every systemd service the box knows about — running, stopped,
+    failed, whatever project it belongs to — not a fixed list, so it
+    never goes stale. Includes inactive/stopped units (via --all) since
+    those matter just as much as running ones for a monitoring view."""
     try:
         result = subprocess.run(
-            ["systemctl", "list-units", "--type=service", "--state=running", "--no-legend", "--plain"],
+            ["systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain"],
             capture_output=True, text=True, timeout=5,
         )
     except Exception:
@@ -93,11 +122,15 @@ def list_running_services():
         parts = line.split(None, 4)
         if len(parts) < 4:
             continue
-        unit, _load, active, _sub = parts[:4]
+        unit, _load, active, sub = parts[:4]
         description = parts[4] if len(parts) > 4 else unit
-        if unit in _EXCLUDE_UNITS or unit.startswith(_EXCLUDE_PREFIXES):
+        unit_lower = unit.lower()
+        if unit_lower in _EXCLUDE_UNITS or unit_lower.startswith(_EXCLUDE_PREFIXES):
             continue
-        services.append({"unit": unit, "description": description, "active": active == "active"})
+        services.append({
+            "unit": unit, "description": description,
+            "active": active == "active", "state": active, "sub_state": sub,
+        })
     services.sort(key=lambda s: s["unit"])
     return services
 
@@ -132,7 +165,7 @@ def get_status():
         "memory": get_memory(),
         "disk": get_disk(),
         "uptime_seconds": get_uptime_seconds(),
-        "services": list_running_services(),
+        "services": list_services(),
         "containers": list_containers(),
         "timestamp": time.time(),
     }

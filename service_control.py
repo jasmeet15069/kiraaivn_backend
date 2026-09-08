@@ -17,6 +17,8 @@ import os
 import re
 import subprocess
 
+import storage
+
 ALLOWED_ACTIONS = {"start", "stop", "restart"}
 _UNIT_RE = re.compile(r"^[A-Za-z0-9_.@-]+\.service$")
 _PROTECTED_UNITS = {"ssh.service", "sshd.service"}
@@ -33,6 +35,11 @@ def _run(argv, timeout=15):
     return result.returncode == 0, output
 
 
+def _get_description(unit):
+    ok, output = _run(["systemctl", "show", unit, "--property=Description", "--value"])
+    return output.strip() if ok and output.strip() else unit
+
+
 def control_service(unit, action):
     if action not in ALLOWED_ACTIONS:
         return False, f"Invalid action '{action}'."
@@ -45,6 +52,9 @@ def control_service(unit, action):
 
 
 def delete_service(unit):
+    """Soft-delete: stops, disables, and moves the unit file into the
+    recycle bin (30-day auto-expiry, see storage.py) rather than destroying
+    it outright — restorable via restore_service() until it expires."""
     if not _UNIT_RE.match(unit or ""):
         return False, f"Invalid unit name '{unit}'."
     if unit in _PROTECTED_UNITS:
@@ -56,14 +66,51 @@ def delete_service(unit):
     if not os.path.isfile(unit_path):
         return False, f"'{unit}' has no unit file under {UNIT_DIR} — nothing to delete (it may belong to a package)."
 
+    try:
+        with open(unit_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError as exc:
+        return False, f"Could not read unit file to recycle it: {exc}"
+
+    description = _get_description(unit)
     _run(["systemctl", "stop", unit])
     _run(["systemctl", "disable", unit])
+    storage.recycle_service(unit, content, description)
+
     try:
         os.remove(unit_path)
     except OSError as exc:
-        return False, f"Stopped and disabled, but couldn't remove the unit file: {exc}"
+        return False, f"Recycled, but couldn't remove the live unit file: {exc}"
     _run(["systemctl", "daemon-reload"])
-    return True, f"{unit} stopped, disabled, and its unit file removed."
+    return True, f"{unit} stopped, disabled, and moved to the recycle bin (restorable for {storage.RECYCLE_BIN_DAYS} days)."
+
+
+def restore_service(unit):
+    if not _UNIT_RE.match(unit or ""):
+        return False, f"Invalid unit name '{unit}'."
+    entry = storage.get_recycled_service(unit)
+    if not entry:
+        return False, f"'{unit}' is not in the recycle bin."
+
+    unit_path = os.path.join(UNIT_DIR, unit)
+    if not os.path.abspath(unit_path).startswith(UNIT_DIR + os.sep):
+        return False, "Invalid unit path."
+    if os.path.exists(unit_path):
+        return False, f"'{unit}' already exists on disk — remove it first."
+
+    try:
+        with open(unit_path, "w", encoding="utf-8") as f:
+            f.write(entry["unit_file_content"])
+    except OSError as exc:
+        return False, f"Could not write unit file: {exc}"
+
+    ok, output = _run(["systemctl", "daemon-reload"])
+    if not ok:
+        return False, f"Restored the unit file but daemon-reload failed: {output}"
+
+    storage.remove_from_recycle_bin(unit)
+    ok, output = _run(["systemctl", "enable", "--now", unit])
+    return ok, output or f"{unit} restored and started."
 
 
 def create_service(unit, description, exec_start, working_directory=None, user="root", environment=None, start=True):

@@ -60,6 +60,27 @@ def service_delete_route():
     return jsonify({"ok": ok, "output": output}), (200 if ok else 400)
 
 
+@app.route("/api/recycle-bin")
+def recycle_bin_route():
+    return jsonify({"items": storage.list_recycled_services(), "days": storage.RECYCLE_BIN_DAYS})
+
+
+@app.route("/api/recycle-bin/restore", methods=["POST"])
+def recycle_bin_restore_route():
+    data = request.get_json(force=True, silent=True) or {}
+    unit = str(data.get("unit", ""))
+    ok, output = service_control.restore_service(unit)
+    return jsonify({"ok": ok, "output": output}), (200 if ok else 400)
+
+
+@app.route("/api/recycle-bin/purge", methods=["POST"])
+def recycle_bin_purge_route():
+    data = request.get_json(force=True, silent=True) or {}
+    unit = str(data.get("unit", ""))
+    storage.remove_from_recycle_bin(unit)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/service-create", methods=["POST"])
 def service_create_route():
     data = request.get_json(force=True, silent=True) or {}
