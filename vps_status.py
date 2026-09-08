@@ -4,18 +4,20 @@ reads local system state, which is a different risk category entirely
 from the system-connector's remote execution.
 """
 import os
+import shutil
 import subprocess
 import time
 
-SERVICES = [
-    "kira-chat-backend",
-    "kira-task-worker",
-    "kira-agent-gateway",
-    "nginx",
-    "jazz-local-qwen3b",
-    "jazz-local-dolphin",
-    "ollama",
-]
+# Pure OS/plumbing units nobody's dashboarding for — everything else running
+# (every project's services: MHMS/Serenentra, hotel/POS, Jarvis, MCP servers,
+# etc.) is discovered live and shown, so this list never needs updating when
+# a new project's service gets added to the box.
+_EXCLUDE_UNITS = {
+    "dbus.service", "polkit.service", "multipathd.service", "qemu-guest-agent.service",
+    "rsyslog.service", "cron.service", "atd.service", "containerd.service",
+    "unattended-upgrades.service", "docker.service",
+}
+_EXCLUDE_PREFIXES = ("systemd-", "getty@", "serial-getty@", "user@", "hc-net-ifup@")
 
 
 def _read_cpu_times():
@@ -55,7 +57,7 @@ def get_memory():
 
 
 def get_disk(path="/"):
-    total, used, _ = __import__("shutil").disk_usage(path)
+    total, used, _ = shutil.disk_usage(path)
     return {
         "total_gb": round(total / (1024 ** 3), 1),
         "used_gb": round(used / (1024 ** 3), 1),
@@ -73,14 +75,50 @@ def get_load_avg():
     return {"1m": round(one, 2), "5m": round(five, 2), "15m": round(fifteen, 2)}
 
 
-def get_service_status(name):
+def list_running_services():
+    """Every currently-running systemd service on the box, whatever project
+    it belongs to — not a fixed list, so it doesn't go stale."""
     try:
         result = subprocess.run(
-            ["systemctl", "is-active", name], capture_output=True, text=True, timeout=3
+            ["systemctl", "list-units", "--type=service", "--state=running", "--no-legend", "--plain"],
+            capture_output=True, text=True, timeout=5,
         )
-        return result.stdout.strip() or "unknown"
     except Exception:
-        return "unknown"
+        return []
+
+    services = []
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) < 4:
+            continue
+        unit, _load, active, _sub = parts[:4]
+        description = parts[4] if len(parts) > 4 else unit
+        if unit in _EXCLUDE_UNITS or unit.startswith(_EXCLUDE_PREFIXES):
+            continue
+        services.append({"unit": unit, "description": description, "active": active == "active"})
+    services.sort(key=lambda s: s["unit"])
+    return services
+
+
+def list_containers():
+    """Running Docker containers, if Docker is present — separate from
+    systemd services since projects like Serenentra run via docker-compose."""
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}\t{{.Image}}\t{{.Status}}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+    except Exception:
+        return []
+
+    containers = []
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3:
+            containers.append({"name": parts[0], "image": parts[1], "status": parts[2]})
+    return containers
 
 
 def get_status():
@@ -92,6 +130,7 @@ def get_status():
         "memory": get_memory(),
         "disk": get_disk(),
         "uptime_seconds": get_uptime_seconds(),
-        "services": {name: get_service_status(name) for name in SERVICES},
+        "services": list_running_services(),
+        "containers": list_containers(),
         "timestamp": time.time(),
     }

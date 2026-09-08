@@ -1,5 +1,7 @@
 import os
 import re
+import time
+from datetime import datetime
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -343,6 +345,46 @@ def vps_status_route():
     )
     status["history"] = storage.get_vps_history()
     return jsonify(status)
+
+
+@app.route("/api/vps-kpis")
+def vps_kpis_route():
+    days = min(int(request.args.get("days", 30)), 90)
+    months = min(int(request.args.get("months", 12)), 24)
+
+    since_daily = time.time() - days * 86400
+    since_monthly = time.time() - months * 31 * 86400
+    samples = storage.get_vps_history_samples(since_monthly)
+
+    daily, monthly = {}, {}
+    for s in samples:
+        dt = datetime.fromtimestamp(s["created_at"])
+        if s["created_at"] >= since_daily:
+            bucket = daily.setdefault(dt.strftime("%Y-%m-%d"), {"cpu": [], "mem": [], "disk": []})
+            bucket["cpu"].append(s["cpu_percent"])
+            bucket["mem"].append(s["mem_percent"])
+            bucket["disk"].append(s["disk_percent"])
+        bucket = monthly.setdefault(dt.strftime("%Y-%m"), {"cpu": [], "mem": [], "disk": []})
+        bucket["cpu"].append(s["cpu_percent"])
+        bucket["mem"].append(s["mem_percent"])
+        bucket["disk"].append(s["disk_percent"])
+
+    def summarize(buckets):
+        out = []
+        for key in sorted(buckets.keys(), reverse=True):
+            b = buckets[key]
+            out.append({
+                "key": key,
+                "cpu_avg": round(sum(b["cpu"]) / len(b["cpu"]), 1),
+                "cpu_max": round(max(b["cpu"]), 1),
+                "mem_avg": round(sum(b["mem"]) / len(b["mem"]), 1),
+                "mem_max": round(max(b["mem"]), 1),
+                "disk_avg": round(sum(b["disk"]) / len(b["disk"]), 1),
+                "samples": len(b["cpu"]),
+            })
+        return out
+
+    return jsonify({"daily": summarize(daily), "monthly": summarize(monthly)})
 
 
 @app.route("/api/tasks")

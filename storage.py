@@ -55,6 +55,15 @@ CREATE TABLE IF NOT EXISTS vps_samples (
     disk_percent REAL NOT NULL,
     created_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS vps_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cpu_percent REAL NOT NULL,
+    mem_percent REAL NOT NULL,
+    disk_percent REAL NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vps_history_created ON vps_history(created_at);
 """
 
 
@@ -266,5 +275,37 @@ def get_vps_history(limit=30):
             {"cpu_percent": r[0], "load1": r[1], "mem_percent": r[2], "disk_percent": r[3], "created_at": r[4]}
             for r in rows
         ]
+    finally:
+        conn.close()
+
+
+def record_vps_history_sample(cpu_percent, mem_percent, disk_percent):
+    """Long-lived, low-frequency samples (see worker.py) that day/month KPI
+    rollups are built from — independent of whether anyone has the
+    dashboard open. Capped at ~6 months of 5-minute samples."""
+    conn = _conn()
+    try:
+        conn.execute(
+            "INSERT INTO vps_history (cpu_percent, mem_percent, disk_percent, created_at) VALUES (?, ?, ?, ?)",
+            (cpu_percent, mem_percent, disk_percent, time.time()),
+        )
+        conn.execute(
+            "DELETE FROM vps_history WHERE id NOT IN "
+            "(SELECT id FROM vps_history ORDER BY id DESC LIMIT 55000)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_vps_history_samples(since_ts):
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT cpu_percent, mem_percent, disk_percent, created_at FROM vps_history "
+            "WHERE created_at >= ? ORDER BY id ASC",
+            (since_ts,),
+        ).fetchall()
+        return [{"cpu_percent": r[0], "mem_percent": r[1], "disk_percent": r[2], "created_at": r[3]} for r in rows]
     finally:
         conn.close()

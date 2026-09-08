@@ -12,9 +12,12 @@ import traceback
 import app as app_module
 import mailer
 import storage
+import vps_status
 
 POLL_INTERVAL_SECONDS = 5
 TASK_MAX_TOOL_ITERATIONS = 10
+VPS_SAMPLE_INTERVAL_SECONDS = 300  # 5 min — feeds the dashboard's day/month KPI rollups
+_last_vps_sample = 0
 
 
 def process_task(task):
@@ -40,6 +43,24 @@ def process_task(task):
         mailer.send_task_email(description, err, success=False)
 
 
+def maybe_sample_vps():
+    """Records a metrics sample every VPS_SAMPLE_INTERVAL_SECONDS, independent
+    of whether anyone has the dashboard open — this is what makes the
+    day/month KPI rollups real instead of only covering active viewing."""
+    global _last_vps_sample
+    now = time.time()
+    if now - _last_vps_sample < VPS_SAMPLE_INTERVAL_SECONDS:
+        return
+    _last_vps_sample = now
+    try:
+        status = vps_status.get_status()
+        storage.record_vps_history_sample(
+            status["cpu_percent"], status["memory"]["percent"], status["disk"]["percent"]
+        )
+    except Exception:
+        print(f"[worker] vps sampling error:\n{traceback.format_exc()}")
+
+
 def main():
     print("[worker] started, polling for tasks...")
     while True:
@@ -48,6 +69,7 @@ def main():
                 process_task(task)
         except Exception:
             print(f"[worker] poll loop error:\n{traceback.format_exc()}")
+        maybe_sample_vps()
         time.sleep(POLL_INTERVAL_SECONDS)
 
 
