@@ -4,6 +4,7 @@ reads local system state, which is a different risk category entirely
 from the system-connector's remote execution.
 """
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -18,6 +19,7 @@ _EXCLUDE_UNITS = {
     "unattended-upgrades.service", "docker.service",
 }
 _EXCLUDE_PREFIXES = ("systemd-", "getty@", "serial-getty@", "user@", "hc-net-ifup@")
+_UNIT_RE = re.compile(r"^[A-Za-z0-9_.@-]+\.service$")
 
 
 def _read_cpu_times():
@@ -133,4 +135,87 @@ def get_status():
         "services": list_running_services(),
         "containers": list_containers(),
         "timestamp": time.time(),
+    }
+
+
+def _parse_exec_start(raw):
+    """systemctl show's ExecStart is a struct-ish string like
+    '{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 app.py ; ... }' —
+    pull out just the argv[] part, which is what a human wants to see."""
+    if not raw:
+        return None
+    match = re.search(r"argv\[\]=([^;]+)", raw)
+    return match.group(1).strip() if match else raw
+
+
+def _listening_ports_for_pid(pid):
+    if not pid or pid == "0":
+        return []
+    try:
+        result = subprocess.run(["ss", "-tlnp"], capture_output=True, text=True, timeout=5)
+    except Exception:
+        return []
+    ports = []
+    needle = f"pid={pid},"
+    for line in result.stdout.splitlines():
+        if needle in line:
+            parts = line.split()
+            if len(parts) >= 4:
+                ports.append(parts[3])
+    return ports
+
+
+def get_service_detail(unit):
+    if not _UNIT_RE.match(unit or ""):
+        return {"error": f"Invalid unit name '{unit}'."}
+
+    props = {}
+    try:
+        result = subprocess.run(
+            [
+                "systemctl", "show", unit, "--no-page",
+                "--property=Description,ActiveState,SubState,MainPID,ExecStart,"
+                "WorkingDirectory,User,ActiveEnterTimestamp,MemoryCurrent,Restart,FragmentPath",
+            ],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.splitlines():
+            if "=" in line:
+                key, _, value = line.partition("=")
+                props[key] = value
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    if not props or props.get("FragmentPath", "") == "":
+        return {"error": f"'{unit}' not found."}
+
+    pid = props.get("MainPID", "0")
+    mem_raw = props.get("MemoryCurrent", "")
+    mem_mb = round(int(mem_raw) / (1024 * 1024), 1) if mem_raw.isdigit() else None
+
+    logs = []
+    try:
+        log_result = subprocess.run(
+            ["journalctl", "-u", unit, "-n", "25", "--no-pager", "-o", "short-iso"],
+            capture_output=True, text=True, timeout=5,
+        )
+        logs = log_result.stdout.splitlines()
+    except Exception:
+        pass
+
+    return {
+        "unit": unit,
+        "description": props.get("Description") or unit,
+        "active_state": props.get("ActiveState", "unknown"),
+        "sub_state": props.get("SubState", ""),
+        "main_pid": pid if pid != "0" else None,
+        "exec_start": _parse_exec_start(props.get("ExecStart", "")),
+        "working_directory": props.get("WorkingDirectory") or None,
+        "user": props.get("User") or "root",
+        "active_since": props.get("ActiveEnterTimestamp") or None,
+        "memory_mb": mem_mb,
+        "restart_policy": props.get("Restart") or None,
+        "unit_file": props.get("FragmentPath") or None,
+        "ports": _listening_ports_for_pid(pid),
+        "recent_logs": logs,
     }

@@ -7,14 +7,77 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 
+import auth
+import service_control
 import storage
 import tools
 import vps_status
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+CORS(app, resources={r"/api/*": {"origins": "*"}}, allow_headers=["Content-Type", "Authorization"])
 storage.init_db()
 tools.discover_mcp_tools()  # pay the MCP subprocess-spawn cost at boot, not on a live request
+
+_PUBLIC_API_PATHS = {"/api/login", "/api/health"}
+
+
+@app.before_request
+def require_auth():
+    if request.method == "OPTIONS" or not request.path.startswith("/api/"):
+        return None
+    if request.path in _PUBLIC_API_PATHS:
+        return None
+    header = request.headers.get("Authorization", "")
+    token = header[7:] if header.startswith("Bearer ") else ""
+    if not auth.verify_token(token):
+        return jsonify({"error": "unauthorized"}), 401
+    return None
+
+
+@app.route("/api/login", methods=["POST"])
+def login():
+    data = request.get_json(force=True, silent=True) or {}
+    if not auth.check_password(data.get("password", "")):
+        return jsonify({"error": "Incorrect password."}), 401
+    return jsonify({"token": auth.create_token()})
+
+
+@app.route("/api/service-control", methods=["POST"])
+def service_control_route():
+    data = request.get_json(force=True, silent=True) or {}
+    unit = str(data.get("unit", ""))
+    action = str(data.get("action", ""))
+    ok, output = service_control.control_service(unit, action)
+    return jsonify({"ok": ok, "output": output}), (200 if ok else 400)
+
+
+@app.route("/api/service-delete", methods=["POST"])
+def service_delete_route():
+    data = request.get_json(force=True, silent=True) or {}
+    unit = str(data.get("unit", ""))
+    ok, output = service_control.delete_service(unit)
+    return jsonify({"ok": ok, "output": output}), (200 if ok else 400)
+
+
+@app.route("/api/service-create", methods=["POST"])
+def service_create_route():
+    data = request.get_json(force=True, silent=True) or {}
+    unit = str(data.get("unit", ""))
+    if unit and not unit.endswith(".service"):
+        unit += ".service"
+    environment = data.get("environment") or []
+    if not isinstance(environment, list):
+        environment = []
+    ok, output = service_control.create_service(
+        unit,
+        str(data.get("description", "")),
+        str(data.get("exec_start", "")),
+        working_directory=str(data.get("working_directory") or "") or None,
+        user=str(data.get("user") or "root"),
+        environment=[str(e) for e in environment],
+        start=bool(data.get("start", True)),
+    )
+    return jsonify({"ok": ok, "output": output}), (200 if ok else 400)
 
 # ---- Cloud provider (Kira AI) ----
 KIRA_API_KEY = os.environ["KIRA_API_KEY"]
@@ -345,6 +408,13 @@ def vps_status_route():
     )
     status["history"] = storage.get_vps_history()
     return jsonify(status)
+
+
+@app.route("/api/service-detail")
+def service_detail_route():
+    unit = request.args.get("unit", "")
+    detail = vps_status.get_service_detail(unit)
+    return jsonify(detail), (404 if "error" in detail else 200)
 
 
 @app.route("/api/vps-kpis")
