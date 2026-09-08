@@ -7,6 +7,7 @@ import requests
 
 import storage
 import tools
+import vps_status
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -332,6 +333,16 @@ def list_tools():
     live = tools.gateway_status()
     connectors = [{"name": name, "connected": name in live} for name in connector_names]
     return jsonify({"tools": out, "connectors": connectors})
+
+
+@app.route("/api/vps-status")
+def vps_status_route():
+    status = vps_status.get_status()
+    storage.record_vps_sample(
+        status["cpu_percent"], status["load_avg"]["1m"], status["memory"]["percent"], status["disk"]["percent"]
+    )
+    status["history"] = storage.get_vps_history()
+    return jsonify(status)
 
 
 @app.route("/api/tasks")

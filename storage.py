@@ -46,6 +46,15 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
+
+CREATE TABLE IF NOT EXISTS vps_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cpu_percent REAL NOT NULL,
+    load1 REAL NOT NULL,
+    mem_percent REAL NOT NULL,
+    disk_percent REAL NOT NULL,
+    created_at REAL NOT NULL
+);
 """
 
 
@@ -220,6 +229,41 @@ def list_tasks(session_id, limit=20):
         ).fetchall()
         return [
             {"id": r[0], "description": r[1], "status": r[2], "result": r[3], "created_at": r[4], "updated_at": r[5]}
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def record_vps_sample(cpu_percent, load1, mem_percent, disk_percent):
+    conn = _conn()
+    try:
+        conn.execute(
+            "INSERT INTO vps_samples (cpu_percent, load1, mem_percent, disk_percent, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (cpu_percent, load1, mem_percent, disk_percent, time.time()),
+        )
+        # Keep the table small — this is a rolling window for a sparkline, not an archive.
+        conn.execute(
+            "DELETE FROM vps_samples WHERE id NOT IN "
+            "(SELECT id FROM vps_samples ORDER BY id DESC LIMIT 200)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_vps_history(limit=30):
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT cpu_percent, load1, mem_percent, disk_percent, created_at FROM vps_samples "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        rows.reverse()
+        return [
+            {"cpu_percent": r[0], "load1": r[1], "mem_percent": r[2], "disk_percent": r[3], "created_at": r[4]}
             for r in rows
         ]
     finally:
