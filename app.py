@@ -3,7 +3,7 @@ import re
 import time
 from datetime import datetime
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import requests
 
@@ -12,6 +12,7 @@ import service_control
 import storage
 import tools
 import vps_status
+import workspace
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}}, allow_headers=["Content-Type", "Authorization"])
@@ -145,7 +146,13 @@ SYSTEM_PROMPT = (
     "Accuracy rules: don't hallucinate. If you're not confident about a specific fact, "
     "number, date, name, or detail, say plainly that you're not sure instead of inventing "
     "an answer, or use the recall/run_code tools to check first. Prefer a short honest "
-    "'I don't know' or 'I'm not certain' over a confident-sounding guess."
+    "'I don't know' or 'I'm not certain' over a confident-sounding guess.\n\n"
+    "Workspace: you have a persistent shared workspace (separate from run_code's throwaway "
+    "sandbox) that the user can browse in the VPS Monitor dashboard. Before creating any new "
+    "file, script, or small project, call create_workspace_folder with a short label to get a "
+    "fresh timestamped folder, then write everything for that piece of work inside it using "
+    "the mcp_workspace-fs_* tools. Never write to the workspace root or reuse an old folder "
+    "for unrelated work — this convention applies no matter which model is answering."
 )
 
 TOOL_PROTOCOL = (
@@ -391,6 +398,8 @@ def list_tools():
             category = "sandbox"
         elif name == "create_task":
             category = "task"
+        elif name == "create_workspace_folder" or name.startswith("mcp_workspace-fs_"):
+            category = "workspace"
         else:
             category = "memory"
         out.append({"name": name, "description": spec["description"], "category": category})
@@ -415,6 +424,26 @@ def service_detail_route():
     unit = request.args.get("unit", "")
     detail = vps_status.get_service_detail(unit)
     return jsonify(detail), (404 if "error" in detail else 200)
+
+
+@app.route("/api/workspace")
+def workspace_list_route():
+    result = workspace.list_dir(request.args.get("path", ""))
+    return jsonify(result), (400 if "error" in result else 200)
+
+
+@app.route("/api/workspace/file")
+def workspace_file_route():
+    result = workspace.read_file(request.args.get("path", ""))
+    return jsonify(result), (400 if "error" in result else 200)
+
+
+@app.route("/api/workspace/raw")
+def workspace_raw_route():
+    real_path = workspace.resolve_for_download(request.args.get("path", ""))
+    if not real_path:
+        return jsonify({"error": "Invalid file."}), 400
+    return send_file(real_path)
 
 
 @app.route("/api/vps-kpis")

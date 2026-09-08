@@ -8,6 +8,7 @@ the form:
 when it wants to use a tool. We parse that out of its raw text reply, run
 the tool, feed the result back in, and loop.
 """
+import datetime
 import json
 import os
 import re
@@ -17,6 +18,26 @@ import requests
 import mcp_client
 import sandbox
 import storage
+
+WORKSPACE_ROOT = os.environ.get(
+    "JARVIS_WORKSPACE_ROOT", os.path.join(os.path.dirname(__file__), "workspace")
+)
+
+
+def create_workspace_folder(label):
+    label = re.sub(r"[^A-Za-z0-9_-]+", "-", (label or "session").strip()).strip("-")[:50] or "session"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    folder_name = f"{timestamp}_{label}"
+    path = os.path.join(WORKSPACE_ROOT, folder_name)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as exc:
+        return f"[failed to create workspace folder: {exc}]"
+    return (
+        f"Created workspace folder: {path}\n"
+        "Write files there using the workspace-fs MCP tools "
+        "(e.g. mcp_workspace-fs_write_file) with this exact path."
+    )
 
 MAX_TOOL_ITERATIONS = 4
 
@@ -103,6 +124,14 @@ def create_task_tool(session_id, model, description):
 
 def build_tool_specs(session_id, model=None):
     specs = {
+        "create_workspace_folder": {
+            "description": "Create a fresh, timestamped folder in the shared persistent workspace "
+                            "before starting any new file, script, or small project — never write "
+                            "into the workspace root or reuse an old folder for unrelated work. "
+                            "Returns the exact path to write files into with the workspace-fs tools.",
+            "params": '{"label": "<short name for this piece of work, e.g. \\"sales-report\\">"}',
+            "fn": lambda args: create_workspace_folder(str(args.get("label", ""))),
+        },
         "create_task": {
             "description": "Hand off a longer or complex request to run in the background instead of "
                             "making the user wait right now. Use this when the user explicitly asks for "

@@ -5,6 +5,12 @@
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/opt/kira-chat-backend/sandbox"],
       "env": {}
+    },
+    {
+      "name": "workspace-fs",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/opt/kira-chat-backend/workspace"],
+      "env": {}
     }
   ]
 }
